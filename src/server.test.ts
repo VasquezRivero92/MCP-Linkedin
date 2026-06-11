@@ -42,7 +42,7 @@ describe('LinkedInMCPServer', () => {
         return mockServer;
       } as any);
 
-      const server = new LinkedInMCPServer(validConfig);
+      const _server = new LinkedInMCPServer(validConfig);
       expect(LinkedInClient).toHaveBeenCalledWith(expect.anything(), expect.anything());
     });
 
