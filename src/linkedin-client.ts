@@ -67,9 +67,10 @@ export class LinkedInClient {
       this.logger.debug('Fetching LinkedIn profile');
       // Try OpenID Connect userinfo endpoint first (works with openid+profile scopes)
       try {
+        const token = await this.tokenProvider.getAccessToken();
         const userinfoResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
           headers: {
-            Authorization: this.client.defaults.headers.Authorization,
+            Authorization: `Bearer ${token}`,
           },
         });
         const profile = LinkedInProfileSchema.parse({
@@ -612,4 +613,3 @@ export class LinkedInClient {
     }
   }
 }
-
