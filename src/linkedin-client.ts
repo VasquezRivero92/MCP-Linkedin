@@ -83,7 +83,7 @@ export class LinkedInClient {
         });
         this.logger.info('Successfully fetched LinkedIn profile via userinfo');
         return profile;
-      } catch (userinfoError) {
+      } catch (_userinfoError) {
         this.logger.debug('userinfo endpoint failed, trying /me endpoint');
         // Fall back to legacy /me endpoint (requires r_liteprofile scope)
         const response = await this.client.get('/me');
