@@ -110,22 +110,60 @@ export class LinkedInMCPServer {
 
     this.server.tool(
       'share_linkedin_post',
-      'Share a new post on LinkedIn',
+      'Share a new post on LinkedIn with optional image (via URL, prompt, or Nano Banana) or article link',
       {
-        text: z.string().describe('The text content of the post'),
+        text: z.string().describe('The text content of the LinkedIn post'),
+        imageUrl: z.string().optional().describe('Public image URL to download and attach to the LinkedIn post'),
+        imagePrompt: z.string().optional().describe('Prompt to generate an image with Nano Banana / Gemini and attach it to the post'),
+        articleUrl: z.string().optional().describe('Web URL / link to share with an article preview card'),
+        title: z.string().optional().describe('Title for the attached image or article'),
+        description: z.string().optional().describe('Description for the attached image or article'),
       },
-      async ({ text }): Promise<ToolResult> => {
+      async ({ text, imageUrl, imagePrompt, articleUrl, title, description }): Promise<ToolResult> => {
         this.logger.info('Tool called: share_linkedin_post');
         try {
           if (!text) {
             throw new Error('Text is required for sharing a post');
           }
-          const result = await this.linkedInClient.sharePost(text);
+          const result = await this.linkedInClient.sharePost({
+            text,
+            imageUrl,
+            imagePrompt,
+            articleUrl,
+            title,
+            description,
+          });
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           };
         } catch (error) {
           this.logger.error('Error in share_linkedin_post:', error);
+          throw error;
+        }
+      }
+    );
+
+    this.server.tool(
+      'generate_and_share_linkedin_post',
+      'Generate an AI image with Nano Banana and share a post on LinkedIn with the generated image',
+      {
+        text: z.string().describe('The text content of the LinkedIn post'),
+        imagePrompt: z.string().describe('Detailed prompt for Nano Banana to generate the infographic or image'),
+        title: z.string().optional().describe('Title for the image'),
+      },
+      async ({ text, imagePrompt, title }): Promise<ToolResult> => {
+        this.logger.info('Tool called: generate_and_share_linkedin_post');
+        try {
+          const result = await this.linkedInClient.sharePost({
+            text,
+            imagePrompt,
+            title,
+          });
+          return {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          };
+        } catch (error) {
+          this.logger.error('Error in generate_and_share_linkedin_post:', error);
           throw error;
         }
       }

@@ -35,6 +35,66 @@ export class StaticTokenProvider implements TokenProvider {
   }
 }
 
+/**
+ * Genera una imagen utilizando la API de Google Gemini Imagen (Nano Banana) u OpenAI
+ */
+export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.NANOBANANA_API_KEY;
+  const openAiKey = process.env.OPENAI_API_KEY;
+
+  if (geminiKey) {
+    try {
+      // 1. Intentar con Imagen 3.0 de Google AI Studio (Nano Banana Engine)
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${geminiKey}`;
+      const response = await axios.post(url, {
+        instances: [{ prompt }],
+        parameters: {
+          sampleCount: 1,
+          aspectRatio: '1:1',
+          outputMimeType: 'image/jpeg',
+        },
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const base64Data = response.data?.predictions?.[0]?.bytesBase64Encoded;
+      if (base64Data) {
+        return Buffer.from(base64Data, 'base64');
+      }
+    } catch (err: any) {
+      console.warn('Fallo generación con Imagen 3.0 predict, intentando endpoint alternativo...', err?.response?.data || err.message);
+    }
+  }
+
+  if (openAiKey) {
+    try {
+      const response = await axios.post('https://api.openai.com/v1/images/generations', {
+        prompt,
+        model: 'dall-e-3',
+        n: 1,
+        size: '1024x1024',
+        response_format: 'b64_json',
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openAiKey}`,
+        },
+      });
+
+      const base64Data = response.data?.data?.[0]?.b64_json;
+      if (base64Data) {
+        return Buffer.from(base64Data, 'base64');
+      }
+    } catch (err: any) {
+      console.warn('Fallo generación con OpenAI:', err?.response?.data || err.message);
+    }
+  }
+
+  throw new Error(
+    'No se pudo generar la imagen con Nano Banana. Asegúrate de configurar GEMINI_API_KEY o GOOGLE_API_KEY en tu archivo .env para habilitar la generación automática de imágenes.'
+  );
+}
+
 export class LinkedInClient {
   private client: AxiosInstance;
   private logger: Logger;
@@ -164,31 +224,157 @@ export class LinkedInClient {
     }
   }
 
-  async sharePost(text: string): Promise<{ id: string; url: string }> {
+  async uploadImage(imageData: Buffer | string, ownerUrn?: string): Promise<string> {
     try {
-      this.logger.debug('Creating LinkedIn post');
+      this.logger.debug('Registering image upload on LinkedIn');
+      let owner = ownerUrn;
+      if (!owner) {
+        const profile = await this.getProfile();
+        owner = `urn:li:person:${profile.id}`;
+      }
+
+      const token = await this.tokenProvider.getAccessToken();
+
+      // 1. Registrar el upload del asset
+      const registerResponse = await this.client.post('/assets?action=registerUpload', {
+        registerUploadRequest: {
+          recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
+          owner,
+          supportedUploadMechanism: ['SYNCHRONOUS_UPLOAD'],
+        },
+      });
+
+      const uploadUrl = registerResponse.data.value?.uploadMechanism?.['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']?.uploadUrl;
+      const asset = registerResponse.data.value?.asset;
+
+      if (!uploadUrl || !asset) {
+        throw new Error('Failed to obtain LinkedIn upload URL or asset URN');
+      }
+
+      // 2. Obtener el buffer de la imagen
+      let buffer: Buffer;
+      let contentType = 'image/jpeg';
+
+      if (Buffer.isBuffer(imageData)) {
+        buffer = imageData;
+      } else if (typeof imageData === 'string' && (imageData.startsWith('http://') || imageData.startsWith('https://'))) {
+        this.logger.debug(`Downloading image from URL: ${imageData}`);
+        const dlResponse = await axios.get(imageData, { responseType: 'arraybuffer' });
+        buffer = Buffer.from(dlResponse.data);
+        contentType = String(dlResponse.headers['content-type'] || 'image/jpeg');
+      } else if (typeof imageData === 'string' && imageData.startsWith('data:')) {
+        const matches = imageData.match(/^data:([^;]+);base64,(.+)$/);
+        if (matches) {
+          contentType = matches[1];
+          buffer = Buffer.from(matches[2], 'base64');
+        } else {
+          buffer = Buffer.from(imageData, 'base64');
+        }
+      } else if (typeof imageData === 'string') {
+        buffer = Buffer.from(imageData, 'base64');
+      } else {
+        throw new Error('Unsupported image data format');
+      }
+
+      // 3. Subir el binario de la imagen al uploadUrl de LinkedIn
+      this.logger.debug(`Uploading image binary to LinkedIn (${buffer.length} bytes)`);
+      await axios.put(uploadUrl, buffer, {
+        headers: {
+          'Content-Type': contentType,
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      this.logger.info(`Successfully uploaded image to LinkedIn. Asset URN: ${asset}`);
+      return asset;
+    } catch (error) {
+      this.logger.error('Error uploading image to LinkedIn', error);
+      throw new Error(`Failed to upload image to LinkedIn: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async sharePost(options: string | {
+    text: string;
+    imageUrl?: string;
+    imageBuffer?: Buffer;
+    imagePrompt?: string;
+    articleUrl?: string;
+    title?: string;
+    description?: string;
+  }): Promise<{ id: string; url: string; assetUrn?: string }> {
+    try {
+      const text = typeof options === 'string' ? options : options.text;
+      const imageUrl = typeof options === 'object' ? options.imageUrl : undefined;
+      const imageBuffer = typeof options === 'object' ? options.imageBuffer : undefined;
+      const imagePrompt = typeof options === 'object' ? options.imagePrompt : undefined;
+      const articleUrl = typeof options === 'object' ? options.articleUrl : undefined;
+      const title = typeof options === 'object' ? options.title : undefined;
+      const description = typeof options === 'object' ? options.description : undefined;
+
+      this.logger.debug('Creating LinkedIn post with enhanced media support');
       const profile = await this.getProfile();
-      const response = await this.client.post('/ugcPosts', {
-        author: `urn:li:person:${profile.id}`,
+      const authorUrn = `urn:li:person:${profile.id}`;
+
+      let shareMediaCategory = 'NONE';
+      const mediaList: any[] = [];
+      let attachedAssetUrn: string | undefined;
+
+      // 1. Caso Imagen generada con Nano Banana / Gemini Imagen si viene imagePrompt
+      let effectiveImageSource = imageUrl || imageBuffer;
+      if (imagePrompt && !effectiveImageSource) {
+        this.logger.info(`Generating image with Nano Banana / Imagen for prompt: "${imagePrompt}"`);
+        effectiveImageSource = await generateNanoBananaImage(imagePrompt);
+      }
+
+      // 2. Caso Imagen (URL o Buffer)
+      if (effectiveImageSource) {
+        const assetUrn = await this.uploadImage(effectiveImageSource, authorUrn);
+        attachedAssetUrn = assetUrn;
+        shareMediaCategory = 'IMAGE';
+        mediaList.push({
+          status: 'READY',
+          description: {
+            text: description || title || 'Image',
+          },
+          media: assetUrn,
+          title: {
+            text: title || 'Image',
+          },
+        });
+      } else if (articleUrl) {
+        // 3. Caso Artículo / Enlace enriquecido
+        shareMediaCategory = 'ARTICLE';
+        mediaList.push({
+          status: 'READY',
+          originalUrl: articleUrl,
+          description: description ? { text: description } : undefined,
+          title: title ? { text: title } : undefined,
+        });
+      }
+
+      const postBody: any = {
+        author: authorUrn,
         lifecycleState: 'PUBLISHED',
         specificContent: {
           'com.linkedin.ugc.ShareContent': {
             shareCommentary: {
               text,
             },
-            shareMediaCategory: 'NONE',
+            shareMediaCategory,
+            ...(mediaList.length > 0 ? { media: mediaList } : {}),
           },
         },
         visibility: {
           'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC',
         },
-      });
+      };
 
+      const response = await this.client.post('/ugcPosts', postBody);
       const postId = response.data.id;
       const postUrl = `https://www.linkedin.com/feed/update/${postId}`;
 
-      this.logger.info(`Successfully created LinkedIn post: ${postId}`);
-      return { id: postId, url: postUrl };
+      this.logger.info(`Successfully created LinkedIn post: ${postId} (media: ${shareMediaCategory})`);
+      return { id: postId, url: postUrl, assetUrn: attachedAssetUrn };
     } catch (error) {
       this.logger.error('Error creating LinkedIn post', error);
       throw new Error(`Failed to create LinkedIn post: ${error instanceof Error ? error.message : 'Unknown error'}`);

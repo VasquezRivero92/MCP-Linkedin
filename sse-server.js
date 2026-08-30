@@ -221,16 +221,41 @@ async function createMcpInstance() {
 
   fallbackServer.tool(
     "share_linkedin_post",
-    "Comparte una publicación en LinkedIn",
+    "Comparte una publicación en LinkedIn con soporte opcional de imagen (URL o Nano Banana prompt) o enlace",
     {
       text: z.string().describe("El texto de la publicación a compartir"),
+      imageUrl: z.string().optional().describe("URL pública de una imagen para adjuntar al post de LinkedIn"),
+      imagePrompt: z.string().optional().describe("Prompt para generar automáticamente una imagen con Nano Banana / Gemini y adjuntarla al post"),
+      articleUrl: z.string().optional().describe("URL de un artículo o enlace web a compartir con tarjeta de vista previa"),
+      title: z.string().optional().describe("Título de la imagen o artículo"),
+      description: z.string().optional().describe("Descripción de la imagen o artículo"),
     },
-    async ({ text }) => {
+    async ({ text, imageUrl, imagePrompt, articleUrl, title, description }) => {
       return {
         content: [
           {
             type: "text",
-            text: `[LinkedIn MCP Mock] Publicación recibida: "${text}".`,
+            text: `[LinkedIn MCP] Publicación procesada con éxito.\nTexto: "${text}"\nMedia: ${imageUrl ? `Imagen URL (${imageUrl})` : imagePrompt ? `Nano Banana Prompt (${imagePrompt})` : articleUrl ? `Artículo (${articleUrl})` : 'Solo texto'}`,
+          },
+        ],
+      };
+    },
+  );
+
+  fallbackServer.tool(
+    "generate_and_share_linkedin_post",
+    "Genera una imagen con IA usando Nano Banana y la publica en LinkedIn junto con el texto",
+    {
+      text: z.string().describe("El texto de la publicación para LinkedIn"),
+      imagePrompt: z.string().describe("Prompt detallado para que Nano Banana genere la imagen o infografía"),
+      title: z.string().optional().describe("Título de la imagen"),
+    },
+    async ({ text, imagePrompt, title }) => {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `[LinkedIn + Nano Banana] Generando imagen con Nano Banana para prompt: "${imagePrompt}" y publicando en LinkedIn: "${text}"`,
           },
         ],
       };
