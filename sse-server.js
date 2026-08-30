@@ -13,11 +13,21 @@ app.use(
     allowedHeaders: ["*"],
   }),
 );
+
+// Permite capturar el payload JSON-RPC en cualquier formato
 app.use(express.text({ type: "*/*" }));
 
 const sessions = new Map();
 
-app.get("/mcp", (req, res) => {
+app.get("/", (req, res) => {
+  res.status(200).send("LinkedIn MCP Server OK");
+});
+
+// Endpoint SSE
+app.get("/sse", (req, res) => {
+  const sessionId = crypto.randomUUID();
+  console.log(`[SSE] Nueva conexión iniciada (Sesión: ${sessionId})`);
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -26,9 +36,7 @@ app.get("/mcp", (req, res) => {
   });
   res.flushHeaders();
 
-  const sessionId = crypto.randomUUID();
-  const endpoint = `https://mcp-linkedin.wisp.uno/mcp/message?sessionId=${sessionId}`;
-
+  // Iniciar subproceso dedicado para esta sesión
   const child = spawn("node", ["./dist/index.js"], {
     env: { ...process.env, FORCE_COLOR: "0" },
     stdio: ["pipe", "pipe", "inherit"],
@@ -36,37 +44,57 @@ app.get("/mcp", (req, res) => {
 
   sessions.set(sessionId, { res, child });
 
-  res.write(`event: endpoint\r\ndata: ${endpoint}\r\n\r\n`);
+  // Evento endpoint obligatorio para MCP
+  res.write(`event: endpoint\ndata: /message?sessionId=${sessionId}\n\n`);
 
+  let stdoutBuffer = "";
   child.stdout.on("data", (chunk) => {
-    const text = chunk.toString();
-    const lines = text.split(/\r?\n/);
+    stdoutBuffer += chunk.toString();
+    const lines = stdoutBuffer.split("\n");
+    stdoutBuffer = lines.pop() || "";
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith("{")) {
-        res.write(`event: message\r\ndata: ${trimmed}\r\n\r\n`);
+      if (!trimmed) continue;
+      // Filtrar logs de texto plano y enviar solo JSON válidos
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        console.log(`[MCP -> Gemini]: ${trimmed}`);
+        res.write(`event: message\ndata: ${trimmed}\n\n`);
+      } else {
+        console.log(`[Proceso Log]: ${trimmed}`);
       }
     }
   });
 
+  child.on("error", (err) => {
+    console.error(`[Error Proceso ${sessionId}]:`, err.message);
+  });
+
   req.on("close", () => {
+    console.log(`[SSE] Conexión cerrada (Sesión: ${sessionId})`);
     child.kill();
     sessions.delete(sessionId);
   });
 });
 
-app.post("/mcp/message", (req, res) => {
+// Endpoint POST para mensajes JSON-RPC
+app.post("/message", (req, res) => {
   const sessionId = req.query.sessionId;
   const session = sessions.get(sessionId);
 
   if (!session) {
-    return res.status(404).json({ error: "Session not found" });
+    console.warn(`[Mensaje rechazado] Sesión no encontrada: ${sessionId}`);
+    return res.status(404).send("Session not found");
   }
 
   const payload =
     typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+  console.log(`[Gemini -> MCP]: ${payload}`);
+
   session.child.stdin.write(payload + "\n");
   res.status(200).send("OK");
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log(`Listening on ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[MCP Server] Escuchando en el puerto ${PORT}`);
+});
