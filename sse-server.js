@@ -24,7 +24,11 @@ app.get("/", (req, res) => {
 app.get("/sse", async (req, res) => {
   console.log("[SSE] Solicitud de conexión entrante desde Gemini");
 
-  const transport = new SSEServerTransport("/message", res);
+  // URL absoluta con HTTPS obligatoria para el cliente web de Google
+  const transport = new SSEServerTransport(
+    "https://mcp-linkedin.wisp.uno/message",
+    res,
+  );
   const sessionId = transport.sessionId;
 
   // Iniciar cliente de transporte local conectado a LinkedIn MCP
