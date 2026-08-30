@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 
 const app = express();
 const PORT = process.env.PORT || 9973;
@@ -15,24 +14,29 @@ app.use(
   }),
 );
 
-// Instanciar el servidor MCP con sus herramientas
-const server = new McpServer({
-  name: "linkedin-mcp-server",
-  version: "1.0.0",
-});
+// Fábrica para crear una instancia nueva e independiente por cada conexión
+function createServerInstance() {
+  const server = new McpServer({
+    name: "linkedin-mcp-server",
+    version: "1.0.0",
+  });
 
-// Registrar las herramientas directamente o importar la configuración
-// Ejemplo de herramienta base para comprobar conexión inmediata
-server.tool(
-  "get_profile",
-  "Obtiene información del perfil de LinkedIn",
-  {},
-  async () => {
-    return {
-      content: [{ type: "text", text: "LinkedIn MCP conectado exitosamente" }],
-    };
-  },
-);
+  // Herramienta de prueba base
+  server.tool(
+    "get_profile",
+    "Obtiene información del perfil de LinkedIn",
+    {},
+    async () => {
+      return {
+        content: [
+          { type: "text", text: "LinkedIn MCP conectado exitosamente" },
+        ],
+      };
+    },
+  );
+
+  return server;
+}
 
 const transports = new Map();
 
@@ -51,15 +55,19 @@ app.get("/sse", async (req, res) => {
   const sessionId = transport.sessionId;
   transports.set(sessionId, transport);
 
+  const server = createServerInstance();
+
   req.on("close", async () => {
     console.log(`[SSE] Conexión cerrada para sesión ${sessionId}`);
     transports.delete(sessionId);
-    await transport.close();
+    try {
+      await transport.close();
+    } catch {}
   });
 
   await server.connect(transport);
   console.log(
-    `[SSE] Servidor MCP vinculado y escuchando en sesión: ${sessionId}`,
+    `[SSE] Servidor MCP vinculado exitosamente a sesión: ${sessionId}`,
   );
 });
 
