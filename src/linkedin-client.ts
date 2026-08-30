@@ -36,11 +36,34 @@ export class StaticTokenProvider implements TokenProvider {
 }
 
 /**
+ * Transforma prompts densos de texto en directivas visuales de diseño gráfico tech de alto impacto
+ */
+function optimizePromptForVisualDesign(rawPrompt: string): string {
+  // Limpiar artefactos de prompts que inducen al modelo a dibujar hojas de papel o mockups lejanos
+  let sanitized = rawPrompt
+    .replace(/cheatsheet\s*infographic/gi, 'tech infographic illustration')
+    .replace(/modular grid containing clean white cards/gi, 'modern sleek geometric UI interface')
+    .replace(/Panel [A-Za-z0-9\s]+:/gi, '')
+    .replace(/strictly in Spanish inside the cards/gi, '')
+    .replace(/Body Sections & Spanish Content.*?:\s*/gi, '')
+    .replace(/\[\s*Script\s*\/.*?\]/gi, '')
+    .replace(/\b(GET|POST|MERGE)\s+\/_api[^\s]+/gi, '')
+    .trim();
+
+  const coreTopic = sanitized.slice(0, 250);
+
+  return `Full bleed modern corporate tech vector infographic illustration, theme: ${coreTopic}. Sleek cloud data architecture, glowing API network connections, vibrant digital UI dashboard elements, polished royal blue, cyber violet and emerald green accents, crisp clean tech aesthetic, 8k resolution, trending on Dribbble, professional LinkedIn banner graphic, full frame art, no picture frame, no paper mockup, no blurry document, no wall, no borders`;
+}
+
+/**
  * Genera una imagen utilizando la API de Google Gemini Imagen (Nano Banana), OpenAI o motor Nano Banana Universal
  */
 export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.NANOBANANA_API_KEY;
   const openAiKey = process.env.OPENAI_API_KEY;
+  const visualPrompt = optimizePromptForVisualDesign(prompt);
+
+  console.log(`[Nano Banana] 🎨 Prompt visual optimizado: "${visualPrompt.slice(0, 120)}..."`);
 
   // 1. Intentar con modelos de Google AI Studio / Imagen
   if (geminiKey) {
@@ -57,7 +80,7 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
         const response = await axios.post(
           url,
           {
-            instances: [{ prompt }],
+            instances: [{ prompt: visualPrompt }],
             parameters: {
               sampleCount: 1,
               aspectRatio: '4:5',
@@ -91,7 +114,7 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
       const response = await axios.post(
         'https://api.openai.com/v1/images/generations',
         {
-          prompt,
+          prompt: visualPrompt,
           model: 'dall-e-3',
           n: 1,
           size: '1024x1024',
@@ -116,11 +139,11 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
     }
   }
 
-  // 3. Motor Nano Banana Universal (Flux/SDXL Direct Engine - Alta resolución, sin límites ni bloqueos)
+  // 3. Motor Nano Banana Universal (Flux Direct Engine - Alta resolución, sin marcos ni mockups)
   try {
-    console.log('[Nano Banana] 🎨 Generando imagen con motor Nano Banana Universal...');
-    const encodedPrompt = encodeURIComponent(prompt.slice(0, 1000));
-    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1080&height=1350&nologo=true&model=flux`;
+    console.log('[Nano Banana] 🎨 Generando ilustración gráfica en alta definición...');
+    const encodedPrompt = encodeURIComponent(visualPrompt);
+    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1080&height=1350&nologo=true&model=flux&seed=${Math.floor(Math.random() * 999999)}`;
     const response = await axios.get(url, {
       responseType: 'arraybuffer',
       timeout: 35000,
