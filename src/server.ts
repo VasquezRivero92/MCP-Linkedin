@@ -573,6 +573,15 @@ export class LinkedInMCPServer {
     this.logger.info('LinkedIn MCP Server started');
   }
 
+  async connect(transport: any): Promise<void> {
+    await this.server.connect(transport);
+    this.logger.info('LinkedIn MCP Server connected to custom transport');
+  }
+
+  getServer(): McpServer {
+    return this.server;
+  }
+
   async stop(): Promise<void> {
     await this.server.close();
     this.logger.info('LinkedIn MCP Server stopped');
