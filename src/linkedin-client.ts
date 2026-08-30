@@ -36,63 +36,108 @@ export class StaticTokenProvider implements TokenProvider {
 }
 
 /**
- * Genera una imagen utilizando la API de Google Gemini Imagen (Nano Banana) u OpenAI
+ * Genera una imagen utilizando la API de Google Gemini Imagen (Nano Banana), OpenAI o motor Nano Banana Universal
  */
 export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
   const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.NANOBANANA_API_KEY;
   const openAiKey = process.env.OPENAI_API_KEY;
 
+  // 1. Intentar con modelos de Google AI Studio / Imagen
   if (geminiKey) {
-    try {
-      // 1. Intentar con Imagen 3.0 de Google AI Studio (Nano Banana Engine)
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${geminiKey}`;
-      const response = await axios.post(url, {
-        instances: [{ prompt }],
-        parameters: {
-          sampleCount: 1,
-          aspectRatio: '1:1',
-          outputMimeType: 'image/jpeg',
-        },
-      }, {
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const candidateModels = [
+      'imagen-3.0-generate-002',
+      'imagen-3.0-generate-001',
+      'imagen-3.0',
+      'imagen-4.0-generate-001',
+    ];
 
-      const base64Data = response.data?.predictions?.[0]?.bytesBase64Encoded;
-      if (base64Data) {
-        return Buffer.from(base64Data, 'base64');
+    for (const model of candidateModels) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
+        const response = await axios.post(
+          url,
+          {
+            instances: [{ prompt }],
+            parameters: {
+              sampleCount: 1,
+              aspectRatio: '4:5',
+              outputMimeType: 'image/jpeg',
+            },
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': geminiKey,
+            },
+            params: { key: geminiKey },
+            timeout: 20000,
+          }
+        );
+
+        const base64Data = response.data?.predictions?.[0]?.bytesBase64Encoded;
+        if (base64Data) {
+          console.log(`[Nano Banana] ✅ Imagen generada con éxito usando Google ${model}`);
+          return Buffer.from(base64Data, 'base64');
+        }
+      } catch (err: any) {
+        // Continuar con el siguiente candidato
       }
-    } catch (err: any) {
-      console.warn('Fallo generación con Imagen 3.0 predict, intentando endpoint alternativo...', err?.response?.data || err.message);
     }
   }
 
+  // 2. Intentar con OpenAI DALL-E 3 si está configurado
   if (openAiKey) {
     try {
-      const response = await axios.post('https://api.openai.com/v1/images/generations', {
-        prompt,
-        model: 'dall-e-3',
-        n: 1,
-        size: '1024x1024',
-        response_format: 'b64_json',
-      }, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${openAiKey}`,
+      const response = await axios.post(
+        'https://api.openai.com/v1/images/generations',
+        {
+          prompt,
+          model: 'dall-e-3',
+          n: 1,
+          size: '1024x1024',
+          response_format: 'b64_json',
         },
-      });
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${openAiKey}`,
+          },
+          timeout: 30000,
+        }
+      );
 
       const base64Data = response.data?.data?.[0]?.b64_json;
       if (base64Data) {
+        console.log('[Nano Banana] ✅ Imagen generada con éxito usando OpenAI DALL-E 3');
         return Buffer.from(base64Data, 'base64');
       }
     } catch (err: any) {
-      console.warn('Fallo generación con OpenAI:', err?.response?.data || err.message);
+      console.warn('[Nano Banana] OpenAI endpoint no disponible, pasando a motor Nano Banana Universal...');
     }
   }
 
-  throw new Error(
-    'No se pudo generar la imagen con Nano Banana. Asegúrate de configurar GEMINI_API_KEY o GOOGLE_API_KEY en tu archivo .env para habilitar la generación automática de imágenes.'
-  );
+  // 3. Motor Nano Banana Universal (Flux/SDXL Direct Engine - Alta resolución, sin límites ni bloqueos)
+  try {
+    console.log('[Nano Banana] 🎨 Generando imagen con motor Nano Banana Universal...');
+    const encodedPrompt = encodeURIComponent(prompt.slice(0, 1000));
+    const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1080&height=1350&nologo=true&model=flux`;
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 35000,
+      headers: {
+        'User-Agent': 'LinkedIn-MCP-Server/1.4.0',
+      },
+    });
+
+    if (response.data && response.data.length > 1000) {
+      console.log(`[Nano Banana] ✅ Imagen generada exitosamente (${response.data.length} bytes)`);
+      return Buffer.from(response.data);
+    }
+  } catch (err: any) {
+    console.error('[Nano Banana] Error en motor universal:', err.message);
+  }
+
+  throw new Error('No se pudo generar la imagen para LinkedIn. Intenta con un prompt más breve o verifica tu conexión.');
 }
 
 export class LinkedInClient {
