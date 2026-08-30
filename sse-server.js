@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import cors from "cors";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
@@ -13,7 +14,7 @@ import { Logger } from "./dist/logger.js";
 const app = express();
 const PORT = process.env.PORT || 9973;
 
-// Middleware de CORS completo
+// Middleware de CORS completo con todos los headers expuestos requeridos por MCP y Gemini
 app.use(
   cors({
     origin: "*",
@@ -29,12 +30,18 @@ app.use(
       "X-Requested-With",
       "*",
     ],
-    exposedHeaders: ["*", "x-session-id", "mcp-session-id", "mcp-protocol-version"],
+    exposedHeaders: [
+      "*",
+      "mcp-session-id",
+      "mcp-protocol-version",
+      "x-session-id",
+      "Content-Type",
+    ],
     credentials: false,
   }),
 );
 
-// Logging de todas las peticiones entrantes para diagnóstico
+// Logging de todas las peticiones entrantes
 app.use((req, res, next) => {
   const timestamp = new Date().toLocaleTimeString();
   const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
@@ -45,7 +52,7 @@ app.use((req, res, next) => {
 // Middleware para parsear JSON
 app.use(express.json({ limit: "10mb" }));
 
-// Subclase de SSEServerTransport que garantiza el envío de URLs absolutas HTTPS y anti-buffering
+// Subclase de SSEServerTransport para URLs absolutas HTTPS y anti-buffering
 class AbsoluteSSEServerTransport extends SSEServerTransport {
   constructor(endpoint, res, options) {
     super(endpoint, res, options);
@@ -63,13 +70,13 @@ class AbsoluteSSEServerTransport extends SSEServerTransport {
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "*",
       });
       if (typeof this.res.flushHeaders === "function") {
         this.res.flushHeaders();
       }
     }
 
-    // Construir URL absoluta con sessionId
     let endpointWithSession;
     try {
       const url = new URL(this._endpoint);
@@ -79,7 +86,7 @@ class AbsoluteSSEServerTransport extends SSEServerTransport {
       endpointWithSession = `${this._endpoint}${this._endpoint.includes("?") ? "&" : "?"}sessionId=${this._sessionId}`;
     }
 
-    // Priming de 2KB para evitar buffering en proxies (Nginx, Wisp, Cloudflare)
+    // Priming de 2KB
     const padding = ": " + " ".repeat(2048) + "\n\n";
     this.res.write(padding);
 
@@ -99,8 +106,9 @@ class AbsoluteSSEServerTransport extends SSEServerTransport {
   }
 }
 
-// Mapa de transportes activos por sessionId para SSE clásico
-const transports = new Map();
+// Mapas de sesiones activas
+const sseTransports = new Map();
+const streamableSessions = new Map(); // sessionId -> { transport, server, lastActive }
 
 // Helper para crear la instancia del servidor MCP
 async function createMcpInstance() {
@@ -121,7 +129,6 @@ async function createMcpInstance() {
       const logger = new Logger(config.logLevel || "info");
 
       if (needsOAuth(config)) {
-        logger.info("[Auth] Usando OAuth token provider...");
         const oauthManager = new OAuthManager(
           {
             clientId: config.linkedInClientId,
@@ -140,12 +147,12 @@ async function createMcpInstance() {
       };
     } catch (err) {
       console.warn(
-        `[MCP Init] Error inicializando cliente de LinkedIn: ${err.message}. Usando servidor base.`,
+        `[MCP Init] Error con credenciales LinkedIn: ${err.message}. Usando servidor base.`,
       );
     }
   }
 
-  // Servidor de fallback con herramientas completas
+  // Servidor con herramientas
   const fallbackServer = new McpServer(
     {
       name: "linkedin-mcp-server",
@@ -170,8 +177,8 @@ async function createMcpInstance() {
             text: JSON.stringify(
               {
                 status: "ready",
-                message: "Servidor LinkedIn MCP conectado a Gemini Spark con éxito.",
-                note: "Para consultar datos reales, configura LINKEDIN_ACCESS_TOKEN o LINKEDIN_CLIENT_ID y LINKEDIN_CLIENT_SECRET en .env",
+                message: "LinkedIn MCP Server conectado a Gemini Spark con éxito.",
+                note: "Servidor online y operativo.",
               },
               null,
               2,
@@ -196,7 +203,8 @@ async function createMcpInstance() {
                 mcp_status: "online",
                 transport: "sse + streamable_http",
                 gemini_spark_compatible: true,
-                active_sessions: transports.size,
+                active_sse_sessions: sseTransports.size,
+                active_http_sessions: streamableSessions.size,
                 has_linkedin_token: !!process.env.LINKEDIN_ACCESS_TOKEN,
                 has_oauth: !!(
                   process.env.LINKEDIN_CLIENT_ID && process.env.LINKEDIN_CLIENT_SECRET
@@ -259,24 +267,7 @@ function getBaseUrl(req) {
   return `${protocol}://${hostHeader}`;
 }
 
-// Servidor global para Streamable HTTP
-let globalStreamableTransport = null;
-let globalStreamableServer = null;
-
-async function getStreamableTransport() {
-  if (!globalStreamableTransport) {
-    globalStreamableTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => undefined,
-      enableJsonResponse: true,
-    });
-    const { server } = await createMcpInstance();
-    globalStreamableServer = server;
-    await globalStreamableServer.connect(globalStreamableTransport);
-  }
-  return globalStreamableTransport;
-}
-
-// Endpoint explícito para HEAD (Gemini realiza HEAD antes del handshake para verificar existencia)
+// Endpoint explícito para HEAD (Gemini preflight)
 app.head("/sse", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -305,8 +296,11 @@ app.get("/", async (req, res) => {
     status: "ok",
     name: "linkedin-mcp-server",
     version: "1.4.0",
-    description: "LinkedIn MCP Server compatible con Gemini Spark, Gemini Connected Apps y Claude",
-    activeSessions: transports.size,
+    description: "LinkedIn MCP Server compatible con Gemini Spark y Gemini Connected Apps",
+    activeSessions: {
+      sse: sseTransports.size,
+      streamableHttp: streamableSessions.size,
+    },
     endpoints: {
       sse: `${baseUrl}/sse`,
       mcp: `${baseUrl}/mcp`,
@@ -325,21 +319,20 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
-// Handler SSE principal
+// Handler SSE principal (GET /sse y GET /mcp)
 async function handleSseConnection(req, res) {
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
   const baseUrl = getBaseUrl(req);
   const messageEndpoint = `${baseUrl}/message`;
 
   console.log(`\n[SSE] 🚀 Conexión SSE entrante desde: ${clientIp}`);
-  console.log(`[SSE] 🌐 URL Base: ${baseUrl}`);
   console.log(`[SSE] 📡 Endpoint de retorno: ${messageEndpoint}`);
 
   const transport = new AbsoluteSSEServerTransport(messageEndpoint, res);
   const sessionId = transport.sessionId;
-  transports.set(sessionId, transport);
+  sseTransports.set(sessionId, transport);
 
-  console.log(`[SSE] 🔑 Sesión asignada: ${sessionId}`);
+  console.log(`[SSE] 🔑 Sesión SSE asignada: ${sessionId}`);
 
   // Heartbeat cada 10 segundos
   const heartbeatInterval = setInterval(() => {
@@ -356,9 +349,9 @@ async function handleSseConnection(req, res) {
 
   const cleanup = async () => {
     clearInterval(heartbeatInterval);
-    if (transports.has(sessionId)) {
+    if (sseTransports.has(sessionId)) {
       console.log(`[SSE] 🔌 Conexión cerrada para sesión: ${sessionId}`);
-      transports.delete(sessionId);
+      sseTransports.delete(sessionId);
       try {
         await transport.close();
       } catch {}
@@ -370,28 +363,35 @@ async function handleSseConnection(req, res) {
 
   try {
     await server.connect(transport);
-    console.log(`[SSE] ✅ Handshake MCP completado para sesión ${sessionId}`);
+    console.log(`[SSE] ✅ Handshake MCP completado para sesión SSE ${sessionId}`);
   } catch (err) {
-    console.error(`[SSE] ❌ Error en servidor MCP:`, err);
+    console.error(`[SSE] ❌ Error en servidor MCP SSE:`, err);
     cleanup();
   }
 }
 
-// Rutas SSE
 app.get("/sse", handleSseConnection);
 app.get("/mcp", handleSseConnection);
 
-// Handler para mensajes POST (RPC)
+// Handler unificado para mensajes POST (RPC)
 async function handleMessagePost(req, res) {
-  const sessionId = req.query.sessionId || req.headers["x-session-id"];
+  // Normalizar cabecera Accept para evitar 406 Not Acceptable del SDK
+  if (!req.headers.accept || !req.headers.accept.includes("text/event-stream")) {
+    req.headers.accept = "application/json, text/event-stream";
+  }
 
-  // Si tiene sessionId, va al transporte SSE de esa sesión
-  if (sessionId && transports.has(sessionId)) {
-    const transport = transports.get(sessionId);
-    const method = req.body?.method || "(raw)";
-    console.log(`[POST /message] 📩 RPC [${method}] para sesión: ${sessionId}`);
+  const rawBody = req.body;
+  const method = Array.isArray(rawBody)
+    ? rawBody.map((m) => m.method).join(", ")
+    : rawBody?.method || "(raw)";
+
+  // 1. Si viene con sessionId en query o headers SSE (/message?sessionId=...)
+  const querySessionId = req.query.sessionId || req.headers["x-session-id"];
+  if (querySessionId && sseTransports.has(querySessionId)) {
+    const transport = sseTransports.get(querySessionId);
+    console.log(`[POST /message] 📩 SSE RPC [${method}] para sesión: ${querySessionId}`);
     try {
-      await transport.handlePostMessage(req, res, req.body);
+      await transport.handlePostMessage(req, res, rawBody);
     } catch (error) {
       console.error(`[POST /message] Error:`, error);
       if (!res.headersSent) res.status(500).json({ error: String(error) });
@@ -399,26 +399,83 @@ async function handleMessagePost(req, res) {
     return;
   }
 
-  // Normalizar cabecera Accept para que el SDK de Streamable HTTP no devuelva 406 Not Acceptable
-  if (!req.headers.accept || !req.headers.accept.includes("text/event-stream")) {
-    req.headers.accept = "application/json, text/event-stream";
+  // 2. Streamable HTTP multi-sesión (utilizado directamente por Gemini Spark en POST /sse, POST /mcp, POST /)
+  const isInit =
+    rawBody?.method === "initialize" ||
+    (Array.isArray(rawBody) && rawBody.some((m) => m.method === "initialize"));
+
+  let httpSessionId = req.headers["mcp-session-id"];
+
+  if (isInit) {
+    // Generar nuevo sessionId para esta sesión de Gemini
+    const newSessionId = randomUUID();
+    console.log(`[POST Streamable] ⚡ Inicializando nueva sesión Streamable HTTP: ${newSessionId}`);
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => newSessionId,
+      enableJsonResponse: true,
+    });
+
+    const { server, type } = await createMcpInstance();
+    await server.connect(transport);
+
+    streamableSessions.set(newSessionId, {
+      transport,
+      server,
+      lastActive: Date.now(),
+    });
+
+    try {
+      await transport.handleRequest(req, res, rawBody);
+      console.log(`[POST Streamable] ✅ Sesión ${newSessionId} inicializada exitosamente (${type})`);
+    } catch (err) {
+      console.error(`[POST Streamable] Error en initialize:`, err);
+      if (!res.headersSent) res.status(500).json({ error: String(err) });
+    }
+    return;
   }
 
-  // Petición Streamable HTTP directa (sin sessionId SSE)
-  const method = req.body?.method || "(direct)";
-  console.log(`[POST] ⚡ Petición Streamable HTTP directa [${method}] en ${req.path}`);
-  try {
-    const streamableTransport = await getStreamableTransport();
-    await streamableTransport.handleRequest(req, res, req.body);
-  } catch (err) {
-    console.error(`[POST] Error en Streamable HTTP:`, err);
-    if (!res.headersSent) {
-      if (sessionId) {
-        res.status(404).json({ error: `Session not found: ${sessionId}` });
-      } else {
-        res.status(500).json({ error: "Failed to handle MCP request" });
-      }
+  // Si no es initialize, buscar la sesión existente por mcp-session-id
+  let activeSession = httpSessionId ? streamableSessions.get(httpSessionId) : null;
+
+  // Si no se encuentra o el cliente no envió mcp-session-id, usar la sesión más reciente como fallback
+  if (!activeSession && streamableSessions.size > 0) {
+    const latestSession = Array.from(streamableSessions.values()).pop();
+    activeSession = latestSession;
+  }
+
+  if (activeSession) {
+    console.log(`[POST Streamable] 📩 RPC [${method}] en sesión activa`);
+    activeSession.lastActive = Date.now();
+    try {
+      await activeSession.transport.handleRequest(req, res, rawBody);
+    } catch (err) {
+      console.error(`[POST Streamable] Error en request [${method}]:`, err);
+      if (!res.headersSent) res.status(500).json({ error: String(err) });
     }
+    return;
+  }
+
+  // Si no hay ninguna sesión activa y no fue initialize, crear una sobre la marcha
+  console.log(`[POST Streamable] ⚠️ Creando sesión fallback para RPC [${method}]`);
+  const fallbackSessionId = randomUUID();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => fallbackSessionId,
+    enableJsonResponse: true,
+  });
+  const { server } = await createMcpInstance();
+  await server.connect(transport);
+  streamableSessions.set(fallbackSessionId, {
+    transport,
+    server,
+    lastActive: Date.now(),
+  });
+
+  try {
+    await transport.handleRequest(req, res, rawBody);
+  } catch (err) {
+    console.error(`[POST Streamable] Error en fallback request:`, err);
+    if (!res.headersSent) res.status(500).json({ error: String(err) });
   }
 }
 
@@ -432,7 +489,7 @@ app.post("/", handleMessagePost);
 // Iniciar servidor HTTP
 const serverInstance = app.listen(PORT, "0.0.0.0", () => {
   console.log(`\n======================================================`);
-  console.log(`🚀 LinkedIn MCP Universal Server listo`);
+  console.log(`🚀 LinkedIn MCP Universal Server listo para Gemini`);
   console.log(`📍 Puerto local: ${PORT}`);
   console.log(`🔗 SSE: http://localhost:${PORT}/sse`);
   console.log(`🔗 MCP: http://localhost:${PORT}/mcp`);
@@ -440,15 +497,34 @@ const serverInstance = app.listen(PORT, "0.0.0.0", () => {
   console.log(`======================================================\n`);
 });
 
+// Limpieza periódica de sesiones inactivas cada 10 minutos
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of streamableSessions.entries()) {
+    if (now - session.lastActive > 30 * 60 * 1000) {
+      try {
+        session.transport.close();
+      } catch {}
+      streamableSessions.delete(id);
+    }
+  }
+}, 10 * 60 * 1000);
+
 // Cierre graceful
 function handleShutdown(signal) {
   console.log(`\n[Shutdown] Recibida señal ${signal}. Cerrando conexiones...`);
-  for (const [id, transport] of transports.entries()) {
+  for (const [id, transport] of sseTransports.entries()) {
     try {
       transport.close();
     } catch {}
   }
-  transports.clear();
+  for (const [id, session] of streamableSessions.entries()) {
+    try {
+      session.transport.close();
+    } catch {}
+  }
+  sseTransports.clear();
+  streamableSessions.clear();
   serverInstance.close(() => {
     console.log("[Shutdown] Servidor detenido.");
     process.exit(0);
