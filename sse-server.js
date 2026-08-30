@@ -6,7 +6,6 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 const app = express();
 const PORT = process.env.PORT || 9973;
 
-// Middleware CORS global
 app.use(
   cors({
     origin: "*",
@@ -17,28 +16,24 @@ app.use(
 
 const sessions = new Map();
 
-// Endpoint de verificación inicial
 app.get("/", (req, res) => {
   res.status(200).send("LinkedIn MCP Server OK");
 });
 
-// Endpoint SSE
 app.get("/mcp", async (req, res) => {
   console.log("[MCP] Handshake inicial recibido desde Gemini");
 
-  // Detectar el host dinámicamente para construir la URL absoluta de retorno
-  const host =
-    req.headers["x-forwarded-host"] ||
-    req.headers.host ||
-    "mcp-linkedin.wisp.uno";
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const messageEndpoint = `${proto}://${host}/mcp/message`;
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
 
-  const transport = new SSEServerTransport(messageEndpoint, res);
+  // Construir explícitamente la URL absoluta HTTPS para Gemini
+  const fullMessageUrl = "https://mcp-linkedin.wisp.uno/mcp/message";
+  const transport = new SSEServerTransport(fullMessageUrl, res);
 
   const child = spawn("node", ["./dist/index.js"], {
     env: process.env,
-    stdio: ["pipe", "pipe", "inherit"], // Los logs van a stderr (consola), el JSON a stdout
+    stdio: ["pipe", "pipe", "inherit"],
   });
 
   const sessionId = transport.sessionId;
@@ -54,13 +49,9 @@ app.get("/mcp", async (req, res) => {
         const json = JSON.parse(trimmed);
         transport.send(json);
       } catch {
-        // Ignorar logs de texto plano
+        // Ignorar logs
       }
     }
-  });
-
-  child.on("error", (err) => {
-    console.error(`[MCP Error en proceso hijo]: ${err.message}`);
   });
 
   req.on("close", () => {
@@ -72,7 +63,6 @@ app.get("/mcp", async (req, res) => {
   await transport.start();
 });
 
-// Endpoint POST para recepción de RPC
 app.post("/mcp/message", express.json({ limit: "10mb" }), async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = sessions.get(sessionId);
