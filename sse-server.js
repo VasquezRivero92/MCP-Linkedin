@@ -45,7 +45,9 @@ app.get("/sse", (req, res) => {
   sessions.set(sessionId, { res, child });
 
   // Evento endpoint obligatorio para MCP
-  res.write(`event: endpoint\ndata: /message?sessionId=${sessionId}\n\n`);
+  res.write(
+    `event: endpoint\ndata: https://mcp-linkedin.wisp.uno/message?sessionId=${sessionId}\n\n`,
+  );
 
   let stdoutBuffer = "";
   child.stdout.on("data", (chunk) => {
