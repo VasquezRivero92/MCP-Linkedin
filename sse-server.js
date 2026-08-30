@@ -6,7 +6,7 @@ import crypto from "crypto";
 const app = express();
 const PORT = process.env.PORT || 9973;
 
-// Middleware CORS permisivo global
+// Cabeceras CORS globales completas
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -18,6 +18,8 @@ app.use((req, res, next) => {
   next();
 });
 
+// Permitir tanto JSON estructurado como texto plano
+app.use(express.json());
 app.use(express.text({ type: "*/*" }));
 
 const sessions = new Map();
@@ -49,10 +51,10 @@ app.get("/sse", (req, res) => {
 
   sessions.set(sessionId, { res, child });
 
-  // Enviar evento endpoint
+  // Notificar el endpoint al cliente
   res.write(`event: endpoint\ndata: ${absoluteEndpoint}\n\n`);
 
-  // Heartbeat cada 15s para evitar que el proxy cierre la conexión
+  // Latido periódico para mantener la conexión viva
   const heartbeat = setInterval(() => {
     res.write(":\n\n");
   }, 15000);
@@ -87,14 +89,6 @@ app.get("/sse", (req, res) => {
   });
 });
 
-// Responder a preflight en /message explícitamente
-app.options("/message", (req, res) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "*");
-  res.status(200).end();
-});
-
 // Endpoint POST para mensajes JSON-RPC
 app.post("/message", (req, res) => {
   const sessionId = req.query.sessionId;
@@ -106,11 +100,11 @@ app.post("/message", (req, res) => {
   }
 
   const payload =
-    typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    typeof req.body === "object" ? JSON.stringify(req.body) : req.body;
   console.log(`[Gemini -> MCP]: ${payload}`);
 
   session.child.stdin.write(payload + "\n");
-  res.status(200).send("OK");
+  res.status(200).send("Accepted");
 });
 
 app.listen(PORT, "0.0.0.0", () => {
