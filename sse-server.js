@@ -1,7 +1,8 @@
 import express from "express";
 import cors from "cors";
-import { spawn } from "child_process";
-import crypto from "crypto";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+// Importa la instancia del servidor o la función constructora del proyecto compilado
+import { server } from "./dist/index.js";
 
 const app = express();
 const PORT = process.env.PORT || 9973;
@@ -14,71 +15,56 @@ app.use(
   }),
 );
 
-const sessions = new Map();
+// Almacenar transportes por ID de sesión
+const transports = new Map();
 
 app.get("/", (req, res) => {
   res.status(200).send("LinkedIn MCP Server OK");
 });
 
 // Endpoint SSE
-app.get("/mcp", (req, res) => {
-  console.log("[MCP] Nueva conexión SSE recibida");
+app.get("/mcp", async (req, res) => {
+  console.log("[MCP] Nueva conexión SSE entrante desde Gemini");
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.flushHeaders();
 
-  const sessionId = crypto.randomUUID();
-  const absoluteEndpoint = `https://mcp-linkedin.wisp.uno/mcp/message?sessionId=${sessionId}`;
+  // Constructor del transporte con la URL completa
+  const transport = new SSEServerTransport(
+    "https://mcp-linkedin.wisp.uno/mcp/message",
+    res,
+  );
 
-  // Iniciar subproceso MCP en Stdio
-  const child = spawn("node", ["./dist/index.js"], {
-    env: process.env,
-    stdio: ["pipe", "pipe", "inherit"],
-  });
-
-  sessions.set(sessionId, { res, child });
-
-  // Enviar el endpoint absoluto obligatorio para Google Gemini
-  res.write(`event: endpoint\ndata: ${absoluteEndpoint}\n\n`);
-
-  child.stdout.on("data", (data) => {
-    const raw = data.toString();
-    const lines = raw.split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith("{")) continue;
-      res.write(`event: message\ndata: ${trimmed}\n\n`);
-    }
-  });
-
-  child.on("error", (err) => {
-    console.error(`[MCP Proceso Error]: ${err.message}`);
-  });
+  const sessionId = transport.sessionId;
+  transports.set(sessionId, transport);
 
   req.on("close", () => {
     console.log(`[MCP] Conexión cerrada para sesión ${sessionId}`);
-    child.kill();
-    sessions.delete(sessionId);
+    transports.delete(sessionId);
   });
+
+  // Si el servidor de index.js ya está exportado
+  if (server && typeof server.connect === "function") {
+    await server.connect(transport);
+  } else {
+    await transport.start();
+  }
 });
 
-// Endpoint POST para recepción de mensajes RPC
-app.post("/mcp/message", express.json({ limit: "10mb" }), (req, res) => {
+// Endpoint POST para recepción de RPC
+app.post("/mcp/message", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const session = sessions.get(sessionId);
+  const transport = transports.get(sessionId);
 
-  if (!session) {
+  console.log(`[MCP] Mensaje RPC entrante para sesión: ${sessionId}`);
+
+  if (!transport) {
     return res.status(404).send("Session not found");
   }
 
-  console.log(
-    `[MCP] Mensaje recibido del cliente: ${JSON.stringify(req.body)}`,
-  );
-  session.child.stdin.write(JSON.stringify(req.body) + "\n");
-  res.status(202).send("Accepted");
+  await transport.handlePostMessage(req, res);
 });
 
 app.listen(PORT, "0.0.0.0", () => {
