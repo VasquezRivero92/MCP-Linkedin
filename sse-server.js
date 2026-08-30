@@ -12,7 +12,7 @@ import { Logger } from "./dist/logger.js";
 const app = express();
 const PORT = process.env.PORT || 9973;
 
-// Middleware de CORS completo para soportar clientes web, Gemini Spark, Google AI Studio, proxies
+// Middleware de CORS completo
 app.use(
   cors({
     origin: "*",
@@ -32,8 +32,54 @@ app.use(
   }),
 );
 
-// Middleware opcional para parsear JSON si viene como body
+// Middleware para parsear JSON
 app.use(express.json({ limit: "10mb" }));
+
+// Subclase de SSEServerTransport para enviar SIEMPRE URLs absolutas en el evento 'endpoint'
+// Google Gemini Spark y Google AI Studio requieren URL absoluta (https://dominio/message?sessionId=...)
+class AbsoluteSSEServerTransport extends SSEServerTransport {
+  constructor(endpoint, res, options) {
+    super(endpoint, res, options);
+  }
+
+  async start() {
+    if (this._sseResponse) {
+      throw new Error(
+        "SSEServerTransport already started! If using Server class, note that connect() calls start() automatically.",
+      );
+    }
+
+    if (!this.res.headersSent) {
+      this.res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+      });
+    }
+
+    // Construir URL absoluta con sessionId garantizada
+    let endpointWithSession;
+    try {
+      const url = new URL(this._endpoint);
+      url.searchParams.set("sessionId", this._sessionId);
+      endpointWithSession = url.toString();
+    } catch {
+      // Fallback si no es URL absoluta
+      endpointWithSession = `${this._endpoint}${this._endpoint.includes("?") ? "&" : "?"}sessionId=${this._sessionId}`;
+    }
+
+    // Enviar evento SSE con la URL absoluta completa que Gemini Spark espera
+    this.res.write(`event: endpoint\ndata: ${endpointWithSession}\n\n`);
+    this._sseResponse = this.res;
+
+    this.res.on("close", () => {
+      this._sseResponse = undefined;
+      this.onclose?.();
+    });
+  }
+}
 
 // Mapa de transportes activos por sessionId
 const transports = new Map();
@@ -81,7 +127,7 @@ async function createMcpInstance() {
     }
   }
 
-  // Si no hay credenciales configuradas o hubo un error, iniciar servidor base con herramientas de diagnóstico y perfil
+  // Servidor de fallback con herramientas
   const fallbackServer = new McpServer(
     {
       name: "linkedin-mcp-server",
@@ -174,11 +220,35 @@ async function createMcpInstance() {
   };
 }
 
+// Determinar URL base pública de la petición
+function getBaseUrl(req) {
+  if (process.env.BASE_URL) {
+    let base = process.env.BASE_URL.trim().replace(/\/$/, "");
+    if (!base.startsWith("http://") && !base.startsWith("https://")) {
+      base = `https://${base}`;
+    }
+    return base;
+  }
+
+  // Detectar desde headers del proxy / request
+  const protoHeader = req.headers["x-forwarded-proto"];
+  const hostHeader =
+    req.headers["x-forwarded-host"] || req.get("host") || `localhost:${PORT}`;
+
+  // Si el host es un dominio público sin puerto (ej. wisp.uno, etc.), asumir https
+  let protocol = "http";
+  if (protoHeader) {
+    protocol = protoHeader.split(",")[0].trim();
+  } else if (!hostHeader.includes("localhost") && !hostHeader.includes("127.0.0.1")) {
+    protocol = "https";
+  }
+
+  return `${protocol}://${hostHeader}`;
+}
+
 // Endpoint de salud y estado
 app.get("/", (req, res) => {
-  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  const host = req.get("host") || `localhost:${PORT}`;
-  const baseUrl = process.env.BASE_URL || `${protocol}://${host}`;
+  const baseUrl = getBaseUrl(req);
 
   res.status(200).json({
     status: "ok",
@@ -208,7 +278,12 @@ app.get("/health", (req, res) => {
 // Endpoint SSE principal para Gemini Spark y clientes MCP
 app.get("/sse", async (req, res) => {
   const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+  const baseUrl = getBaseUrl(req);
+  const messageEndpoint = `${baseUrl}/message`;
+
   console.log(`\n[SSE] 🚀 Nueva conexión entrante desde: ${clientIp}`);
+  console.log(`[SSE] 🌐 URL Base calculada: ${baseUrl}`);
+  console.log(`[SSE] 📡 Endpoint de retorno para Gemini: ${messageEndpoint}`);
 
   // Headers SSE explícitos y anti-buffering
   res.setHeader("Content-Type", "text/event-stream");
@@ -216,20 +291,11 @@ app.get("/sse", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
 
-  // Determinar la URL del endpoint para el mensaje de retorno
-  let messageEndpoint = "/message";
-  if (process.env.MCP_MESSAGE_ENDPOINT) {
-    messageEndpoint = process.env.MCP_MESSAGE_ENDPOINT;
-  } else if (process.env.BASE_URL) {
-    messageEndpoint = `${process.env.BASE_URL.replace(/\/$/, "")}/message`;
-  }
-
-  const transport = new SSEServerTransport(messageEndpoint, res);
+  const transport = new AbsoluteSSEServerTransport(messageEndpoint, res);
   const sessionId = transport.sessionId;
   transports.set(sessionId, transport);
 
   console.log(`[SSE] 🔑 Sesión MCP asignada: ${sessionId}`);
-  console.log(`[SSE] 📡 Endpoint de mensajes configurado en: ${messageEndpoint}`);
 
   // Heartbeat / Keep-alive cada 15 segundos para evitar que Gemini o proxies cierren la conexión
   const heartbeatInterval = setInterval(() => {
@@ -260,7 +326,7 @@ app.get("/sse", async (req, res) => {
 
   try {
     await server.connect(transport);
-    console.log(`[SSE] ✅ Handshake MCP completado exitosamente para sesión ${sessionId}`);
+    console.log(`[SSE] ✅ Handshake MCP inicializado exitosamente para sesión ${sessionId}`);
   } catch (err) {
     console.error(`[SSE] ❌ Error conectando servidor MCP:`, err);
     cleanup();
@@ -270,7 +336,7 @@ app.get("/sse", async (req, res) => {
 // Handler unificado para mensajes POST (RPC)
 async function handleMessagePost(req, res) {
   const sessionId = req.query.sessionId || req.headers["x-session-id"];
-  console.log(`[POST /message] 📩 Mensaje entrante para sessionId: ${sessionId}`);
+  console.log(`\n[POST /message] 📩 Mensaje entrante para sessionId: ${sessionId}`);
 
   if (!sessionId) {
     console.warn("[POST Rechazado] Falta el parámetro sessionId en la solicitud");
@@ -284,7 +350,8 @@ async function handleMessagePost(req, res) {
   }
 
   try {
-    // Si express.json() ya parseó el body, lo pasamos como parsedBody; si no, handlePostMessage leerá el stream
+    const method = req.body?.method || "(raw)";
+    console.log(`[POST /message] ⚙️ Método RPC: ${method}`);
     await transport.handlePostMessage(req, res, req.body);
   } catch (error) {
     console.error(`[POST /message] Error procesando mensaje RPC:`, error);
