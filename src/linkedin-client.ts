@@ -65,45 +65,49 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
 
   console.log(`[Nano Banana] 🎨 Prompt visual optimizado: "${visualPrompt.slice(0, 120)}..."`);
 
-  // 1. Intentar con modelos de Google AI Studio / Imagen
+  // 1. Intentar con modelos de Google AI Studio / Gemini Image Generation
   if (geminiKey) {
-    const candidateModels = [
-      'imagen-3.0-generate-002',
-      'imagen-3.0-generate-001',
-      'imagen-3.0',
-      'imagen-4.0-generate-001',
+    const geminiImageModels = [
+      'gemini-2.5-flash-image',
+      'gemini-3.1-flash-image',
+      'gemini-3-pro-image',
     ];
 
-    for (const model of candidateModels) {
+    for (const model of geminiImageModels) {
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
         const response = await axios.post(
           url,
           {
-            instances: [{ prompt: visualPrompt }],
-            parameters: {
-              sampleCount: 1,
-              aspectRatio: '4:5',
-              outputMimeType: 'image/jpeg',
-            },
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `Generate a high quality corporate tech infographic illustration for LinkedIn: ${visualPrompt}`,
+                  },
+                ],
+              },
+            ],
           },
           {
             headers: {
               'Content-Type': 'application/json',
-              'x-goog-api-key': geminiKey,
             },
-            params: { key: geminiKey },
-            timeout: 20000,
+            timeout: 25000,
           }
         );
 
-        const base64Data = response.data?.predictions?.[0]?.bytesBase64Encoded;
-        if (base64Data) {
-          console.log(`[Nano Banana] ✅ Imagen generada con éxito usando Google ${model}`);
-          return Buffer.from(base64Data, 'base64');
+        const candidateParts = response.data?.candidates?.[0]?.content?.parts;
+        if (candidateParts && Array.isArray(candidateParts)) {
+          for (const part of candidateParts) {
+            if (part.inlineData?.data) {
+              console.log(`[Nano Banana] ✅ Imagen generada con éxito usando Google ${model}`);
+              return Buffer.from(part.inlineData.data, 'base64');
+            }
+          }
         }
       } catch (err: any) {
-        // Continuar con el siguiente candidato
+        // Continuar con el siguiente modelo o fallback
       }
     }
   }
