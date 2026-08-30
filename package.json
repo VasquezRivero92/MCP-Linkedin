@@ -52,7 +52,7 @@
   "homepage": "https://github.com/pegasusheavy/linkedin-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "axios": "^1.13.2",
+    "axios": "^1.20.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
