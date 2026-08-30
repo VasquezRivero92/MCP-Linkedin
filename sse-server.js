@@ -34,10 +34,11 @@ app.use(
   }),
 );
 
-// Logging de todas las peticiones entrantes para diagnóstico en tiempo real
+// Logging de todas las peticiones entrantes para diagnóstico
 app.use((req, res, next) => {
   const timestamp = new Date().toLocaleTimeString();
-  console.log(`[${timestamp}] 🌐 ${req.method} ${req.originalUrl} - IP: ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`);
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+  console.log(`[${timestamp}] 🌐 ${req.method} ${req.originalUrl} - IP: ${ip}`);
   next();
 });
 
@@ -78,11 +79,11 @@ class AbsoluteSSEServerTransport extends SSEServerTransport {
       endpointWithSession = `${this._endpoint}${this._endpoint.includes("?") ? "&" : "?"}sessionId=${this._sessionId}`;
     }
 
-    // Priming comment de 2KB para forzar a cualquier proxy intermedio (Nginx, Wisp, Cloudflare) a vaciar buffers
+    // Priming de 2KB para evitar buffering en proxies (Nginx, Wisp, Cloudflare)
     const padding = ": " + " ".repeat(2048) + "\n\n";
     this.res.write(padding);
 
-    // Enviar evento 'endpoint' que espera Gemini
+    // Enviar evento 'endpoint'
     this.res.write(`event: endpoint\ndata: ${endpointWithSession}\n\n`);
 
     if (typeof this.res.flush === "function") {
@@ -258,14 +259,15 @@ function getBaseUrl(req) {
   return `${protocol}://${hostHeader}`;
 }
 
-// Servidor global para Streamable HTTP (soporte para peticiones HTTP POST JSON-RPC directas)
+// Servidor global para Streamable HTTP
 let globalStreamableTransport = null;
 let globalStreamableServer = null;
 
 async function getStreamableTransport() {
   if (!globalStreamableTransport) {
     globalStreamableTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => undefined, // modo stateless compatible con múltiples requests
+      sessionIdGenerator: () => undefined,
+      enableJsonResponse: true,
     });
     const { server } = await createMcpInstance();
     globalStreamableServer = server;
@@ -274,9 +276,26 @@ async function getStreamableTransport() {
   return globalStreamableTransport;
 }
 
+// Endpoint explícito para HEAD (Gemini realiza HEAD antes del handshake para verificar existencia)
+app.head("/sse", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+  });
+  res.end();
+});
+app.head("/mcp", (req, res) => res.status(200).end());
+app.head("/message", (req, res) => res.status(200).end());
+app.head("/", (req, res) => res.status(200).end());
+
+// Endpoint de verificación OAuth Protected Resource (RFC 9728)
+app.get("/.well-known/oauth-protected-resource*", (req, res) => {
+  res.status(404).json({ error: "No external OAuth authorization server required" });
+});
+
 // Endpoint de salud y diagnóstico
 app.get("/", async (req, res) => {
-  // Si la petición pide text/event-stream, derivar al handler SSE
   if (req.headers.accept?.includes("text/event-stream")) {
     return handleSseConnection(req, res);
   }
@@ -360,7 +379,7 @@ async function handleSseConnection(req, res) {
 
 // Rutas SSE
 app.get("/sse", handleSseConnection);
-app.get("/mcp", handleSseConnection); // Soporte si Gemini intenta /mcp con GET SSE
+app.get("/mcp", handleSseConnection);
 
 // Handler para mensajes POST (RPC)
 async function handleMessagePost(req, res) {
@@ -380,8 +399,14 @@ async function handleMessagePost(req, res) {
     return;
   }
 
-  // Si NO tiene sessionId o es una petición Streamable HTTP directa (como Gemini Enterprise / Streamable)
-  console.log(`[POST] Petición Streamable HTTP directa (sin sessionId SSE) en ${req.path}`);
+  // Normalizar cabecera Accept para que el SDK de Streamable HTTP no devuelva 406 Not Acceptable
+  if (!req.headers.accept || !req.headers.accept.includes("text/event-stream")) {
+    req.headers.accept = "application/json, text/event-stream";
+  }
+
+  // Petición Streamable HTTP directa (sin sessionId SSE)
+  const method = req.body?.method || "(direct)";
+  console.log(`[POST] ⚡ Petición Streamable HTTP directa [${method}] en ${req.path}`);
   try {
     const streamableTransport = await getStreamableTransport();
     await streamableTransport.handleRequest(req, res, req.body);
@@ -400,9 +425,9 @@ async function handleMessagePost(req, res) {
 // Endpoints POST para RPC
 app.post("/message", handleMessagePost);
 app.post("/sse/message", handleMessagePost);
-app.post("/sse", handleMessagePost); // Soporte si Gemini hace POST a /sse directamente
-app.post("/mcp", handleMessagePost); // Soporte estándar /mcp
-app.post("/", handleMessagePost);    // Soporte para raíz
+app.post("/sse", handleMessagePost);
+app.post("/mcp", handleMessagePost);
+app.post("/", handleMessagePost);
 
 // Iniciar servidor HTTP
 const serverInstance = app.listen(PORT, "0.0.0.0", () => {
