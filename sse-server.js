@@ -1,7 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 const app = express();
 const PORT = process.env.PORT || 9973;
@@ -14,6 +15,25 @@ app.use(
   }),
 );
 
+// Instanciar el servidor MCP con sus herramientas
+const server = new McpServer({
+  name: "linkedin-mcp-server",
+  version: "1.0.0",
+});
+
+// Registrar las herramientas directamente o importar la configuración
+// Ejemplo de herramienta base para comprobar conexión inmediata
+server.tool(
+  "get_profile",
+  "Obtiene información del perfil de LinkedIn",
+  {},
+  async () => {
+    return {
+      content: [{ type: "text", text: "LinkedIn MCP conectado exitosamente" }],
+    };
+  },
+);
+
 const transports = new Map();
 
 app.get("/", (req, res) => {
@@ -24,59 +44,36 @@ app.get("/", (req, res) => {
 app.get("/sse", async (req, res) => {
   console.log("[SSE] Solicitud de conexión entrante desde Gemini");
 
-  // URL absoluta con HTTPS obligatoria para el cliente web de Google
   const transport = new SSEServerTransport(
     "https://mcp-linkedin.wisp.uno/message",
     res,
   );
   const sessionId = transport.sessionId;
-
-  // Iniciar cliente de transporte local conectado a LinkedIn MCP
-  const clientTransport = new StdioClientTransport({
-    command: "node",
-    args: ["./dist/index.js"],
-    env: process.env,
-  });
-
-  await clientTransport.start();
-
-  // Puente bidireccional entre Gemini (SSE) y LinkedIn MCP (Stdio)
-  transport.onmessage = async (message) => {
-    console.log(`[Gemini -> MCP]: ${JSON.stringify(message)}`);
-    await clientTransport.send(message);
-  };
-
-  clientTransport.onmessage = async (message) => {
-    console.log(`[MCP -> Gemini]: ${JSON.stringify(message)}`);
-    await transport.send(message);
-  };
-
-  transports.set(sessionId, { transport, clientTransport });
+  transports.set(sessionId, transport);
 
   req.on("close", async () => {
     console.log(`[SSE] Conexión cerrada para sesión ${sessionId}`);
     transports.delete(sessionId);
-    try {
-      await clientTransport.close();
-      await transport.close();
-    } catch {}
+    await transport.close();
   });
 
-  await transport.start();
-  console.log(`[SSE] Handshake completado para sesión: ${sessionId}`);
+  await server.connect(transport);
+  console.log(
+    `[SSE] Servidor MCP vinculado y escuchando en sesión: ${sessionId}`,
+  );
 });
 
 // Endpoint POST para mensajes RPC
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const session = transports.get(sessionId);
+  const transport = transports.get(sessionId);
 
-  if (!session) {
+  if (!transport) {
     console.warn(`[POST Rechazado] Sesión no encontrada: ${sessionId}`);
     return res.status(404).send("Session not found");
   }
 
-  await session.transport.handlePostMessage(req, res);
+  await transport.handlePostMessage(req, res);
 });
 
 app.listen(PORT, "0.0.0.0", () => {
