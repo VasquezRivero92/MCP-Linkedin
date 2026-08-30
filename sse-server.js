@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 const app = express();
 const PORT = process.env.PORT || 9973;
@@ -15,7 +14,6 @@ app.use(
   }),
 );
 
-// Almacén de transportes SSE activos
 const transports = new Map();
 
 app.get("/", (req, res) => {
@@ -26,28 +24,37 @@ app.get("/", (req, res) => {
 app.get("/sse", async (req, res) => {
   console.log("[SSE] Solicitud de conexión entrante desde Gemini");
 
-  // El SDK genera automáticamente el evento endpoint con la ruta adecuada
   const transport = new SSEServerTransport("/message", res);
   const sessionId = transport.sessionId;
-  transports.set(sessionId, transport);
 
-  // Iniciar cliente interno conectado al servidor de LinkedIn
+  // Iniciar cliente de transporte local conectado a LinkedIn MCP
   const clientTransport = new StdioClientTransport({
     command: "node",
     args: ["./dist/index.js"],
     env: process.env,
   });
 
-  const client = new Client(
-    { name: "gemini-bridge", version: "1.0.0" },
-    { capabilities: {} },
-  );
+  await clientTransport.start();
+
+  // Puente bidireccional entre Gemini (SSE) y LinkedIn MCP (Stdio)
+  transport.onmessage = async (message) => {
+    console.log(`[Gemini -> MCP]: ${JSON.stringify(message)}`);
+    await clientTransport.send(message);
+  };
+
+  clientTransport.onmessage = async (message) => {
+    console.log(`[MCP -> Gemini]: ${JSON.stringify(message)}`);
+    await transport.send(message);
+  };
+
+  transports.set(sessionId, { transport, clientTransport });
 
   req.on("close", async () => {
     console.log(`[SSE] Conexión cerrada para sesión ${sessionId}`);
     transports.delete(sessionId);
     try {
       await clientTransport.close();
+      await transport.close();
     } catch {}
   });
 
@@ -55,17 +62,17 @@ app.get("/sse", async (req, res) => {
   console.log(`[SSE] Handshake completado para sesión: ${sessionId}`);
 });
 
-// Endpoint POST para mensajes JSON-RPC
+// Endpoint POST para mensajes RPC
 app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const transport = transports.get(sessionId);
+  const session = transports.get(sessionId);
 
-  if (!transport) {
+  if (!session) {
     console.warn(`[POST Rechazado] Sesión no encontrada: ${sessionId}`);
     return res.status(404).send("Session not found");
   }
 
-  await transport.handlePostMessage(req, res);
+  await session.transport.handlePostMessage(req, res);
 });
 
 app.listen(PORT, "0.0.0.0", () => {
