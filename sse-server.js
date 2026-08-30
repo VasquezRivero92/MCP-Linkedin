@@ -1,110 +1,71 @@
 import express from "express";
 import cors from "cors";
-import { spawn } from "child_process";
-import crypto from "crypto";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 const app = express();
 const PORT = process.env.PORT || 9973;
 
-// Cabeceras CORS globales completas
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "*");
-  res.header("Access-Control-Allow-Credentials", "true");
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-  next();
-});
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["*"],
+  }),
+);
 
-// Permitir tanto JSON estructurado como texto plano
-app.use(express.json());
-app.use(express.text({ type: "*/*" }));
-
-const sessions = new Map();
+// Almacén de transportes SSE activos
+const transports = new Map();
 
 app.get("/", (req, res) => {
   res.status(200).send("LinkedIn MCP Server OK");
 });
 
 // Endpoint SSE
-app.get("/sse", (req, res) => {
-  const sessionId = crypto.randomUUID();
-  console.log(`[SSE] Nueva conexión iniciada (Sesión: ${sessionId})`);
+app.get("/sse", async (req, res) => {
+  console.log("[SSE] Solicitud de conexión entrante desde Gemini");
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-    "Access-Control-Allow-Origin": "*",
-  });
-  res.flushHeaders();
+  // El SDK genera automáticamente el evento endpoint con la ruta adecuada
+  const transport = new SSEServerTransport("/message", res);
+  const sessionId = transport.sessionId;
+  transports.set(sessionId, transport);
 
-  const absoluteEndpoint = `https://mcp-linkedin.wisp.uno/message?sessionId=${sessionId}`;
-
-  const child = spawn("node", ["./dist/index.js"], {
-    env: { ...process.env, FORCE_COLOR: "0" },
-    stdio: ["pipe", "pipe", "inherit"],
+  // Iniciar cliente interno conectado al servidor de LinkedIn
+  const clientTransport = new StdioClientTransport({
+    command: "node",
+    args: ["./dist/index.js"],
+    env: process.env,
   });
 
-  sessions.set(sessionId, { res, child });
+  const client = new Client(
+    { name: "gemini-bridge", version: "1.0.0" },
+    { capabilities: {} },
+  );
 
-  // Notificar el endpoint al cliente
-  res.write(`event: endpoint\ndata: ${absoluteEndpoint}\n\n`);
-
-  // Latido periódico para mantener la conexión viva
-  const heartbeat = setInterval(() => {
-    res.write(":\n\n");
-  }, 15000);
-
-  let stdoutBuffer = "";
-  child.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split("\n");
-    stdoutBuffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-        console.log(`[MCP -> Gemini]: ${trimmed}`);
-        res.write(`event: message\ndata: ${trimmed}\n\n`);
-      } else {
-        console.log(`[Proceso Log]: ${trimmed}`);
-      }
-    }
+  req.on("close", async () => {
+    console.log(`[SSE] Conexión cerrada para sesión ${sessionId}`);
+    transports.delete(sessionId);
+    try {
+      await clientTransport.close();
+    } catch {}
   });
 
-  child.on("error", (err) => {
-    console.error(`[Error Proceso ${sessionId}]:`, err.message);
-  });
-
-  req.on("close", () => {
-    console.log(`[SSE] Conexión cerrada (Sesión: ${sessionId})`);
-    clearInterval(heartbeat);
-    child.kill();
-    sessions.delete(sessionId);
-  });
+  await transport.start();
+  console.log(`[SSE] Handshake completado para sesión: ${sessionId}`);
 });
 
 // Endpoint POST para mensajes JSON-RPC
-app.post("/message", (req, res) => {
+app.post("/message", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const session = sessions.get(sessionId);
+  const transport = transports.get(sessionId);
 
-  if (!session) {
-    console.warn(`[Mensaje rechazado] Sesión no encontrada: ${sessionId}`);
+  if (!transport) {
+    console.warn(`[POST Rechazado] Sesión no encontrada: ${sessionId}`);
     return res.status(404).send("Session not found");
   }
 
-  const payload =
-    typeof req.body === "object" ? JSON.stringify(req.body) : req.body;
-  console.log(`[Gemini -> MCP]: ${payload}`);
-
-  session.child.stdin.write(payload + "\n");
-  res.status(200).send("Accepted");
+  await transport.handlePostMessage(req, res);
 });
 
 app.listen(PORT, "0.0.0.0", () => {
