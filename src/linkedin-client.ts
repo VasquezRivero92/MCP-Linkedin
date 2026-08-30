@@ -65,7 +65,7 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
 
   console.log(`[Nano Banana] 🎨 Prompt visual optimizado: "${visualPrompt.slice(0, 120)}..."`);
 
-  // 1. Intentar con modelos de Google AI Studio / Gemini Image Generation
+  // 1. Intentar con modelos oficiales de Google AI Studio (Gemini Image Generation / Nano Banana)
   if (geminiKey) {
     const geminiImageModels = [
       'gemini-2.5-flash-image',
@@ -83,31 +83,35 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
               {
                 parts: [
                   {
-                    text: `Generate a high quality corporate tech infographic illustration for LinkedIn: ${visualPrompt}`,
+                    text: visualPrompt,
                   },
                 ],
               },
             ],
+            generationConfig: {
+              responseModalities: ['IMAGE'],
+            },
           },
           {
             headers: {
               'Content-Type': 'application/json',
             },
-            timeout: 25000,
+            timeout: 35000,
           }
         );
 
         const candidateParts = response.data?.candidates?.[0]?.content?.parts;
         if (candidateParts && Array.isArray(candidateParts)) {
           for (const part of candidateParts) {
-            if (part.inlineData?.data) {
-              console.log(`[Nano Banana] ✅ Imagen generada con éxito usando Google ${model}`);
-              return Buffer.from(part.inlineData.data, 'base64');
+            const rawB64 = part.inlineData?.data || part.inline_data?.data;
+            if (rawB64) {
+              console.log(`[Nano Banana] ✅ Imagen oficial generada con éxito con la API Key usando Google ${model}`);
+              return Buffer.from(rawB64, 'base64');
             }
           }
         }
       } catch (err: any) {
-        // Continuar con el siguiente modelo o fallback
+        console.warn(`[Nano Banana] Intento con ${model} falló:`, err.response?.data?.error?.message || err.message);
       }
     }
   }
