@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { LinkedInMCPServer } from './server.js';
 import { getConfig, validateConfig, needsOAuth } from './config.js';
 import { OAuthManager } from './oauth-manager.js';
