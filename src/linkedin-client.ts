@@ -68,8 +68,9 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
   // 1. Intentar con modelos oficiales de Google AI Studio (Gemini Image Generation / Nano Banana)
   if (geminiKey) {
     const geminiImageModels = [
-      'gemini-2.5-flash-image',
+      'gemini-3.7-flash',
       'gemini-3.1-flash-image',
+      'gemini-2.5-flash-image',
       'gemini-3-pro-image',
     ];
 
