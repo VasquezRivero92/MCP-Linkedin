@@ -65,7 +65,39 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
 
   console.log(`[Nano Banana] 🎨 Prompt visual optimizado: "${visualPrompt.slice(0, 120)}..."`);
 
-  // 1. Intentar con modelos oficiales de Google AI Studio (Gemini Image Generation / Nano Banana)
+  // 1. Intentar con OpenAI DALL-E 3 si está configurado (Prioridad para calidad nítida sin distorsión)
+  if (openAiKey) {
+    try {
+      console.log('[Nano Banana] 🎨 Generando imagen en alta fidelidad con OpenAI DALL-E 3...');
+      const response = await axios.post(
+        'https://api.openai.com/v1/images/generations',
+        {
+          prompt: visualPrompt,
+          model: 'dall-e-3',
+          n: 1,
+          size: '1024x1024',
+          response_format: 'b64_json',
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${openAiKey}`,
+          },
+          timeout: 45000,
+        }
+      );
+
+      const base64Data = response.data?.data?.[0]?.b64_json;
+      if (base64Data) {
+        console.log('[Nano Banana] ✅ Imagen generada con éxito usando OpenAI DALL-E 3');
+        return Buffer.from(base64Data, 'base64');
+      }
+    } catch (err: any) {
+      console.warn('[Nano Banana] Error en llamada a OpenAI DALL-E 3:', err.response?.data?.error?.message || err.message);
+    }
+  }
+
+  // 2. Intentar con modelos oficiales de Google AI Studio (Gemini Image Generation / Nano Banana)
   if (geminiKey) {
     const geminiImageModels = [
       'gemini-3.7-flash',
@@ -116,38 +148,6 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
       }
     }
   }
-
-  // 2. Intentar con OpenAI DALL-E 3 si está configurado
-  if (openAiKey) {
-    try {
-      const response = await axios.post(
-        'https://api.openai.com/v1/images/generations',
-        {
-          prompt: visualPrompt,
-          model: 'dall-e-3',
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${openAiKey}`,
-          },
-          timeout: 30000,
-        }
-      );
-
-      const base64Data = response.data?.data?.[0]?.b64_json;
-      if (base64Data) {
-        console.log('[Nano Banana] ✅ Imagen generada con éxito usando OpenAI DALL-E 3');
-        return Buffer.from(base64Data, 'base64');
-      }
-    } catch (err: any) {
-      console.warn('[Nano Banana] OpenAI endpoint no disponible, pasando a motor Nano Banana Universal...');
-    }
-  }
-
   // 3. Motor Nano Banana Universal (Flux Direct Engine - Alta resolución, sin marcos ni mockups)
   try {
     console.log('[Nano Banana] 🎨 Generando ilustración gráfica en alta definición...');
