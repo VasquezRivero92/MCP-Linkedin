@@ -65,35 +65,42 @@ export async function generateNanoBananaImage(prompt: string): Promise<Buffer> {
 
   console.log(`[Nano Banana] 🎨 Prompt visual optimizado: "${visualPrompt.slice(0, 120)}..."`);
 
-  // 1. Intentar con OpenAI DALL-E 3 si está configurado (Prioridad para calidad nítida sin distorsión)
+  // 1. Intentar con modelos de OpenAI (gpt-image-1.5, gpt-image-1, gpt-image-2)
   if (openAiKey) {
-    try {
-      console.log('[Nano Banana] 🎨 Generando imagen en alta fidelidad con OpenAI DALL-E 3...');
-      const response = await axios.post(
-        'https://api.openai.com/v1/images/generations',
-        {
-          prompt: visualPrompt,
-          model: 'dall-e-3',
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${openAiKey}`,
+    const openAiModels = ['gpt-image-1.5', 'gpt-image-1', 'gpt-image-2', 'chatgpt-image-latest', 'dall-e-3'];
+    for (const model of openAiModels) {
+      try {
+        console.log(`[Nano Banana] 🎨 Generando imagen en alta fidelidad con OpenAI (${model})...`);
+        const response = await axios.post(
+          'https://api.openai.com/v1/images/generations',
+          {
+            prompt: visualPrompt,
+            model,
+            n: 1,
+            size: '1024x1024',
           },
-          timeout: 45000,
-        }
-      );
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${openAiKey}`,
+            },
+            timeout: 45000,
+          }
+        );
 
-      const base64Data = response.data?.data?.[0]?.b64_json;
-      if (base64Data) {
-        console.log('[Nano Banana] ✅ Imagen generada con éxito usando OpenAI DALL-E 3');
-        return Buffer.from(base64Data, 'base64');
+        const imgObj = response.data?.data?.[0];
+        if (imgObj?.b64_json) {
+          console.log(`[Nano Banana] ✅ Imagen generada con éxito usando OpenAI (${model})`);
+          return Buffer.from(imgObj.b64_json, 'base64');
+        } else if (imgObj?.url) {
+          console.log(`[Nano Banana] 📥 Descargando imagen desde URL de OpenAI (${model})...`);
+          const dl = await axios.get(imgObj.url, { responseType: 'arraybuffer' });
+          console.log(`[Nano Banana] ✅ Imagen generada y descargada con éxito usando OpenAI (${model})`);
+          return Buffer.from(dl.data);
+        }
+      } catch (err: any) {
+        console.warn(`[Nano Banana] Error en llamada a OpenAI (${model}):`, err.response?.data?.error?.message || err.message);
       }
-    } catch (err: any) {
-      console.warn('[Nano Banana] Error en llamada a OpenAI DALL-E 3:', err.response?.data?.error?.message || err.message);
     }
   }
 
